@@ -93,3 +93,37 @@ endfunction
 function! jack_in#clj(is_bg, ...)
   call s:RunRepl(call(function('jack_in#clj_cmd'), a:000), a:is_bg)
 endfunction
+
+" --- Babashka --------------------------------------------------------------
+
+function! jack_in#bb_cmd(...) abort
+  " Default port
+  let l:port = 1667
+
+  " If a port arg is provided, use the first token if it's numeric
+  if a:0 > 0 && a:1 != ''
+    let l:first = split(a:1)[0]
+    if l:first =~ '^\d\+$'
+      let l:port = str2nr(l:first)
+    endif
+  endif
+
+  " Write .nrepl-port next to the current file
+  let l:dir = expand('%:p:h')
+  if empty(l:dir) || !isdirectory(l:dir)
+    call s:warn('Could not determine current file directory to write .nrepl-port')
+  else
+    try
+      call writefile([string(l:port)], l:dir . '/.nrepl-port')
+    catch
+      call s:warn('Failed to write .nrepl-port in ' . l:dir)
+    endtry
+  endif
+
+  " Build the bb command
+  return 'bb nrepl-server ' . l:port
+endfunction
+
+function! jack_in#bb(is_bg, ...) abort
+  call s:RunRepl(call(function('jack_in#bb_cmd'), a:000), a:is_bg)
+endfunction
