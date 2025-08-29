@@ -94,10 +94,10 @@ function! jack_in#clj(is_bg, ...)
   call s:RunRepl(call(function('jack_in#clj_cmd'), a:000), a:is_bg)
 endfunction
 
-" --- Babashka --------------------------------------------------------------
+" --- Babashka: linked lifecycle (server + client, cleanup on exit) ---------
 
 function! jack_in#bb_linked_cmd(...) abort
-  " Default port
+  " Default port = 1667; allow override via first arg if numeric.
   let l:port = 1667
   if a:0 > 0 && a:1 != ''
     let l:first = split(a:1)[0]
@@ -106,7 +106,7 @@ function! jack_in#bb_linked_cmd(...) abort
     endif
   endif
 
-  " Write .nrepl-port next to the current file
+  " Resolve current buffer dir and write .nrepl-port
   let l:dir = expand('%:p:h')
   if empty(l:dir) || !isdirectory(l:dir)
     call s:warn('Could not determine current file directory to write .nrepl-port')
@@ -121,15 +121,18 @@ function! jack_in#bb_linked_cmd(...) abort
     endtry
   endif
 
-  " nREPL CLI client via tools.deps (ensure it's present with -Sdeps)
+  " nREPL CLI client via tools.deps; ensure client is available with -Sdeps
   let l:client = 'clojure -Sdeps ''{:deps {nrepl/nrepl {:mvn/version "1.3.1"}}}'' -M -m nrepl.cmdline --connect --host localhost --port ' . l:port
 
-  " Build combined shell command
+  " Build a single shell that:
+  "  - starts bb nrepl-server in the background and remembers its PID,
+  "  - traps EXIT/INT/TERM/HUP to kill server and delete .nrepl-port,
+  "  - brief sleep to let server bind,
+  "  - runs the client in the foreground (interactive prompt).
   let l:sh = []
   call add(l:sh, 'sh -c ''set -e;')
   call add(l:sh,                 'bb nrepl-server ' . l:port . ' &')
   call add(l:sh,                 'pid=$!;')
-  " cleanup kills server and removes .nrepl-port if we wrote one
   if !empty(l:portfile)
     call add(l:sh, 'cleanup(){ kill "$pid" 2>/dev/null || true; rm -f ' . shellescape(l:portfile) . '; };')
   else
@@ -140,4 +143,33 @@ function! jack_in#bb_linked_cmd(...) abort
   call add(l:sh,                 l:client . ';''')
 
   return join(l:sh, ' ')
+endfunction
+
+" Launch the linked shell in an interactive terminal.
+" We intentionally ignore the bang to keep this session foregrounded & linked.
+function! jack_in#bb_linked(is_bg, ...) abort
+  let l:cmd = call(function('jack_in#bb_linked_cmd'), a:000)
+
+  if exists(':Start') == 2
+    " dispatch.vim foreground job
+    execute 'Start' l:cmd
+    return
+  endif
+
+  if has('nvim')
+    " Neovim terminal
+    tabnew
+    call termopen(l:cmd)
+    startinsert
+    return
+  endif
+
+  if exists(':terminal') == 2
+    " Vim 8 terminal
+    execute 'terminal ' . l:cmd
+    startinsert
+    return
+  endif
+
+  call s:warn('No dispatch.vim, :terminal, or Neovim available to run interactive REPL.')
 endfunction
