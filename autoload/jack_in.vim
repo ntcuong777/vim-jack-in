@@ -97,7 +97,6 @@ endfunction
 " --- Babashka: linked lifecycle (server + client, cleanup on exit) ---------
 
 function! jack_in#bb_linked_cmd(...) abort
-  " Default port = 1667; allow override via first arg if numeric.
   let l:port = 1667
   if a:0 > 0 && a:1 != ''
     let l:first = split(a:1)[0]
@@ -121,34 +120,63 @@ function! jack_in#bb_linked_cmd(...) abort
     endtry
   endif
 
-  " nREPL CLI client via tools.deps; ensure client is available with -Sdeps
-  let l:client = 'clojure -Sdeps ''{:deps {nrepl/nrepl {:mvn/version "1.3.1"}}}'' -M -m nrepl.cmdline --connect --host localhost --port ' . l:port
-
-  " Build a single shell that:
-  "  - starts bb nrepl-server in the background and remembers its PID,
-  "  - traps EXIT/INT/TERM/HUP to kill server and delete .nrepl-port,
-  "  - brief sleep to let server bind,
-  "  - runs the client in the foreground (interactive prompt).
-  let l:sh = []
-  call add(l:sh, 'sh -c ''set -e;')
-  call add(l:sh,                 'bb nrepl-server ' . l:port . ' &')
-  call add(l:sh,                 'pid=$!;')
-  if !empty(l:portfile)
-    call add(l:sh, 'cleanup(){ kill "$pid" 2>/dev/null || true; rm -f ' . shellescape(l:portfile) . '; };')
-  else
-    call add(l:sh, 'cleanup(){ kill "$pid" 2>/dev/null || true; };')
+  " Create a temp runner script to avoid quote hell with -Sdeps
+  let l:tmpdir = has('nvim') ? stdpath('cache') : ($TMPDIR !=# '' ? $TMPDIR : '/tmp')
+  if empty(l:tmpdir)
+    let l:tmpdir = '/tmp'
   endif
-  call add(l:sh,                 'trap cleanup EXIT INT TERM HUP;')
-  call add(l:sh,                 'sleep 0.3;')
-  call add(l:sh,                 l:client . ';''')
+  let l:script = l:tmpdir . '/bb_nrepl_linked_' . getpid() . '_' . reltimefloat(reltime()) . '.sh'
 
-  return join(l:sh, ' ')
+  " Build the script contents (POSIX sh)
+  let l:lines = []
+  call add(l:lines, '#!/bin/sh')
+  call add(l:lines, 'set -e')
+  call add(l:lines, '')
+  call add(l:lines, 'PORT=' . l:port)
+  if !empty(l:portfile)
+    " Quote the path safely
+    call add(l:lines, 'PORTFILE=' . shellescape(l:portfile))
+  else
+    call add(l:lines, 'PORTFILE=''''')
+  endif
+  call add(l:lines, '')
+  call add(l:lines, 'bb nrepl-server "$PORT" &')
+  call add(l:lines, 'pid=$!')
+  call add(l:lines, '')
+  call add(l:lines, 'cleanup() {')
+  call add(l:lines, '  kill "$pid" 2>/dev/null || true')
+  call add(l:lines, '  [ -n "$PORTFILE" ] && rm -f "$PORTFILE" || true')
+  call add(l:lines, '  rm -f "$0" 2>/dev/null || true')
+  call add(l:lines, '}')
+  call add(l:lines, 'trap cleanup EXIT INT TERM HUP')
+  call add(l:lines, '')
+  " brief wait so the server binds
+  call add(l:lines, 'sleep 0.3')
+  call add(l:lines, '')
+  " Use single quotes here so EDN is not re-interpreted by the shell
+  call add(l:lines, "clojure -Sdeps '{:deps {nrepl/nrepl {:mvn/version \"1.3.1\"}}}' -M -m nrepl.cmdline --connect --host localhost --port \"$PORT\"")
+  call add(l:lines, '')
+
+  " Write + chmod + return command to run the script
+  try
+    call writefile(l:lines, l:script, 'b')
+    call system('chmod +x ' . shellescape(l:script))
+  catch
+    call s:warn('Failed to create runner script for bb nREPL')
+    return ''
+  endtry
+
+  " Return the command to execute
+  return 'sh ' . shellescape(l:script)
 endfunction
 
 " Launch the linked shell in an interactive terminal.
 " We intentionally ignore the bang to keep this session foregrounded & linked.
 function! jack_in#bb_linked(is_bg, ...) abort
   let l:cmd = call(function('jack_in#bb_linked_cmd'), a:000)
+  if empty(l:cmd)
+    return
+  endif
 
   if exists(':Start') == 2
     " dispatch.vim foreground job
