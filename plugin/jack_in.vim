@@ -21,5 +21,5 @@ let g:jack_in_injections =
 command! -bang -nargs=* Boot call jack_in#boot(<bang>0,<q-args>)
 command! -bang -nargs=* Lein call jack_in#lein(<bang>0,<q-args>)
 command! -bang -nargs=* Clj call jack_in#clj(<bang>0,<q-args>)
-" :Bb[!] [PORT]
-command! -bang -nargs=* Bb call jack_in#bb(<bang>0,<q-args>)
+" :Bb [PORT]  — start bb nREPL + connect client; quitting REPL stops server and deletes .nrepl-port
+command! -bang -nargs=* Bb call jack_in#bb_linked(<bang>0,<q-args>)
