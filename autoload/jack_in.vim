@@ -96,11 +96,9 @@ endfunction
 
 " --- Babashka --------------------------------------------------------------
 
-function! jack_in#bb_cmd(...) abort
+function! jack_in#bb_linked_cmd(...) abort
   " Default port
   let l:port = 1667
-
-  " If a port arg is provided, use the first token if it's numeric
   if a:0 > 0 && a:1 != ''
     let l:first = split(a:1)[0]
     if l:first =~ '^\d\+$'
@@ -112,18 +110,34 @@ function! jack_in#bb_cmd(...) abort
   let l:dir = expand('%:p:h')
   if empty(l:dir) || !isdirectory(l:dir)
     call s:warn('Could not determine current file directory to write .nrepl-port')
+    let l:portfile = ''
   else
+    let l:portfile = l:dir . '/.nrepl-port'
     try
-      call writefile([string(l:port)], l:dir . '/.nrepl-port')
+      call writefile([string(l:port)], l:portfile)
     catch
       call s:warn('Failed to write .nrepl-port in ' . l:dir)
+      let l:portfile = ''
     endtry
   endif
 
-  " Build the bb command
-  return 'bb nrepl-server ' . l:port
-endfunction
+  " nREPL CLI client via tools.deps (ensure it's present with -Sdeps)
+  let l:client = 'clojure -Sdeps ''{:deps {nrepl/nrepl {:mvn/version "1.3.1"}}}'' -M -m nrepl.cmdline --connect --host localhost --port ' . l:port
 
-function! jack_in#bb(is_bg, ...) abort
-  call s:RunRepl(call(function('jack_in#bb_cmd'), a:000), a:is_bg)
+  " Build combined shell command
+  let l:sh = []
+  call add(l:sh, 'sh -c ''set -e;')
+  call add(l:sh,                 'bb nrepl-server ' . l:port . ' &')
+  call add(l:sh,                 'pid=$!;')
+  " cleanup kills server and removes .nrepl-port if we wrote one
+  if !empty(l:portfile)
+    call add(l:sh, 'cleanup(){ kill "$pid" 2>/dev/null || true; rm -f ' . shellescape(l:portfile) . '; };')
+  else
+    call add(l:sh, 'cleanup(){ kill "$pid" 2>/dev/null || true; };')
+  endif
+  call add(l:sh,                 'trap cleanup EXIT INT TERM HUP;')
+  call add(l:sh,                 'sleep 0.3;')
+  call add(l:sh,                 l:client . ';''')
+
+  return join(l:sh, ' ')
 endfunction
